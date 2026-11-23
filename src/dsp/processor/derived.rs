@@ -1,5 +1,6 @@
 //! Settings -> derived coefficients (recomputed only when settings change).
 
+use std::sync::atomic::Ordering;
 use std::f32::consts::PI;
 
 use super::Processor;
@@ -24,11 +25,18 @@ impl Processor {
             self.lpf.set(true, s.lpf_hz, sr);
         }
 
+        // The STFT (noise suppressor + formant shift share it) runs if either is on.
         let ns_on = s.ns_amount > 0.01;
-        if ns_on && !self.ns_on {
+        let fm_inv = if s.fm_shift.abs() > 0.05 { (-s.fm_shift / 12.0).exp2() } else { 0.0 };
+        if (ns_on || fm_inv > 0.0) && !(self.ns_on || self.fm_inv > 0.0) {
             self.ns.reset();
         }
         self.ns_on = ns_on;
+        self.fm_inv = fm_inv;
+        self.at_on = self.at.configure(s.at_amount, s.at_speed_ms, s.at_key, s.at_scale, s.at_humanize);
+        if !self.at_on {
+            self.params.at_note.store(0, Ordering::Relaxed);
+        }
         let amt = s.ns_amount.clamp(0.0, 1.0);
         self.ns_alpha = 1.0 + 4.0 * amt;
         self.ns_floor = 10f32.powf(-(8.0 + 22.0 * amt) / 20.0);

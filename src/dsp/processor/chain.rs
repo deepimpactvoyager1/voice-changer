@@ -56,9 +56,10 @@ impl Processor {
         let (sb_plain, sb_vc) = self.mix_voices();
         let mut x = input * self.in_gain;
 
-        // 1. noise suppression (before everything else so effects don't boost noise)
-        if self.ns_on {
-            x = self.ns.process(x, self.ns_alpha, self.ns_floor);
+        // 1. noise suppression / formant shift (one shared STFT; effects don't boost noise)
+        if self.ns_on || self.fm_inv > 0.0 {
+            let ns = if self.ns_on { Some((self.ns_alpha, self.ns_floor)) } else { None };
+            x = self.ns.process(x, ns, self.fm_inv);
         }
 
         // 2. noise gate
@@ -112,6 +113,13 @@ impl Processor {
                 1.0
             };
             x *= g * self.comp_makeup;
+        }
+
+        // 6b. autotune: after the compressor (steady level helps the detector), before
+        // pitch shift / harmonizer (so harmonies and transposition build on the corrected
+        // voice) and before every modulation, echo and reverb effect.
+        if self.at_on {
+            x = self.at.process(x, &self.params.at_note);
         }
 
         // 7. pitch shift + harmonizer (the delay line is always fed so toggling is click-free)

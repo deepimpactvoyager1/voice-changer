@@ -1,5 +1,17 @@
 //! The "voice" tab: every effect slider.
 
+use std::sync::atomic::Ordering;
+
+fn note_text(v: u32) -> String {
+    if v == 0 {
+        return "no voice".to_string();
+    }
+    const N: [&str; 12] = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+    let note = (v >> 8) as i32 - 1;
+    let cents = (v & 0xFF) as u8 as i8;
+    format!("{}{} {:+} cents", N[(note % 12) as usize], note / 12 - 1, cents)
+}
+
 use eframe::egui;
 
 use crate::settings::Settings;
@@ -106,6 +118,45 @@ impl App {
                     ..c
                 };
             }
+            if ui.button("Singer").clicked() {
+                self.custom = Settings {
+                    gate_db: -58.0,
+                    hpf_hz: 80.0,
+                    eq_low_db: 1.5,
+                    eq_high_db: 2.5,
+                    comp_thresh_db: -20.0,
+                    comp_ratio: 3.0,
+                    comp_makeup_db: 4.0,
+                    deess: 0.4,
+                    at_amount: 0.5,
+                    at_speed_ms: 80.0,
+                    at_humanize: 0.4,
+                    chorus_mix: 0.15,
+                    chorus_hz: 0.6,
+                    chorus_depth: 0.4,
+                    dbl_mix: 0.25,
+                    dbl_ms: 18.0,
+                    reverb_mix: 0.25,
+                    reverb_size: 0.6,
+                    ..c
+                };
+            }
+            if ui.button("Robot singer").clicked() {
+                self.custom = Settings {
+                    gate_db: -58.0,
+                    hpf_hz: 80.0,
+                    comp_thresh_db: -20.0,
+                    comp_ratio: 3.0,
+                    comp_makeup_db: 4.0,
+                    deess: 0.3,
+                    at_amount: 1.0,
+                    at_speed_ms: 0.0,
+                    at_humanize: 0.0,
+                    reverb_mix: 0.2,
+                    reverb_size: 0.5,
+                    ..c
+                };
+            }
         });
 
         // user presets
@@ -154,6 +205,7 @@ impl App {
         }
         ui.add_space(6.0);
 
+        let note = self.params.at_note.load(Ordering::Relaxed);
         let s = &mut self.custom;
         egui::CollapsingHeader::new("Input & cleanup").default_open(true).show(ui, |ui| {
             sl(ui, &mut s.in_gain_db, 0.0, -20.0..=30.0, "input gain", " dB", false, 0.0);
@@ -194,6 +246,20 @@ impl App {
             sl(ui, &mut s.harm2_mix, 0.0, 0.0..=1.0, "harmony 2 volume", "", false, 0.0);
             sl(ui, &mut s.harm2_semi, 7.0, -24.0..=24.0, "harmony 2 interval", " st", false, 1.0);
             hint(ui, "Harmonizer: extra voices above or below yours. +4 and +7 make a major chord, -12 is an octave down.");
+        });
+        egui::CollapsingHeader::new("Autotune & formant").show(ui, |ui| {
+            sl(ui, &mut s.at_amount, 0.0, 0.0..=1.0, "autotune amount", "", false, 0.0);
+            sl(ui, &mut s.at_speed_ms, 40.0, 0.0..=400.0, "retune speed", " ms", false, 0.0);
+            sl(ui, &mut s.at_humanize, 0.0, 0.0..=1.0, "humanize (keep vibrato)", "", false, 0.0);
+            combo_u8(ui, "at_key", "key", &mut s.at_key, &["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]);
+            combo_u8(ui, "at_scale", "scale", &mut s.at_scale, &["Chromatic", "Major", "Minor", "Major pentatonic", "Minor pentatonic", "Blues"]);
+            if s.at_amount > 0.01 {
+                ui.label(format!("You are singing: {}", note_text(note)));
+            }
+            hint(ui, "Amount 0 = off. Retune speed 0 = hard robotic snap, 400 = slow natural correction. Humanize keeps your vibrato.");
+            ui.separator();
+            sl(ui, &mut s.fm_shift, 0.0, -12.0..=12.0, "formant (voice size)", " st", false, 0.0);
+            hint(ui, "Changes the voice's size and character without changing the note: + is smaller/brighter, - is bigger/deeper. Pitch (above) moves the note itself.");
         });
         egui::CollapsingHeader::new("Modulation (vibrato, tremolo, chorus, doubler)").show(ui, |ui| {
             sl(ui, &mut s.vib_depth, 0.0, 0.0..=1.0, "vibrato depth", "", false, 0.0);

@@ -11,6 +11,8 @@ use crate::settings::{Cmd, Params, Settings};
 
 mod chain;
 mod derived;
+mod autotune;
+use autotune::Autotune;
 
 pub(super) struct Voice {
     data: Arc<Vec<i16>>,
@@ -47,6 +49,8 @@ pub(crate) struct Processor {
     ns_on: bool,
     ns_alpha: f32,
     ns_floor: f32,
+    at_on: bool,
+    fm_inv: f32, // 1 / formant ratio, 0 = off
     comp_on: bool,
     comp_thresh: f32,
     comp_pow: f32,
@@ -96,6 +100,7 @@ pub(crate) struct Processor {
 
     // filter / effect state
     ns: NoiseSuppressor,
+    at: Autotune,
     hpf: Biquad,
     lpf: Biquad,
     eq_low: Biquad,
@@ -160,6 +165,8 @@ impl Processor {
             ns_on: false,
             ns_alpha: 1.0,
             ns_floor: 0.1,
+            at_on: false,
+            fm_inv: 0.0,
             comp_on: false,
             comp_thresh: 0.1,
             comp_pow: 0.0,
@@ -205,6 +212,7 @@ impl Processor {
             w_atk: 1.0 - tc(0.005),
             w_rel: 1.0 - tc(0.05),
             ns: NoiseSuppressor::new(),
+            at: Autotune::new(sr),
             hpf: Biquad::default(),
             lpf: Biquad::default(),
             eq_low: Biquad::default(),

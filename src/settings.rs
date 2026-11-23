@@ -47,6 +47,13 @@ pub(crate) struct Settings {
     pub(crate) chorus_flange: u8, // 0 chorus, 1 flanger
     pub(crate) dbl_mix: f32, // voice doubler
     pub(crate) dbl_ms: f32,
+    // autotune / formant
+    pub(crate) at_amount: f32,   // 0 = off
+    pub(crate) at_speed_ms: f32, // retune speed, 0 = hard snap
+    pub(crate) at_humanize: f32, // 0..1, how much natural vibrato is kept
+    pub(crate) at_key: u8,       // 0..11 (C..B)
+    pub(crate) at_scale: u8,     // 0..5, see SCALES in autotune.rs
+    pub(crate) fm_shift: f32,    // formant shift in semitones, ~0 = off
     // echo / reverb
     pub(crate) echo_mix: f32,
     pub(crate) echo_fb: f32,
@@ -108,6 +115,12 @@ impl Settings {
             chorus_flange: 0,
             dbl_mix: 0.0,
             dbl_ms: 20.0,
+            at_amount: 0.0,
+            at_speed_ms: 40.0,
+            at_humanize: 0.0,
+            at_key: 0,
+            at_scale: 0,
+            fm_shift: 0.0,
             echo_mix: 0.0,
             echo_fb: 0.45,
             echo_ms: 300.0,
@@ -164,6 +177,10 @@ impl Settings {
             ("chorus_depth", &mut self.chorus_depth),
             ("dbl_mix", &mut self.dbl_mix),
             ("dbl_ms", &mut self.dbl_ms),
+            ("at_amount", &mut self.at_amount),
+            ("at_speed_ms", &mut self.at_speed_ms),
+            ("at_humanize", &mut self.at_humanize),
+            ("fm_shift", &mut self.fm_shift),
             ("echo_mix", &mut self.echo_mix),
             ("echo_fb", &mut self.echo_fb),
             ("echo_ms", &mut self.echo_ms),
@@ -188,6 +205,8 @@ impl Settings {
         parts.push(format!("robot_wave={}", self.robot_wave));
         parts.push(format!("dist_type={}", self.dist_type));
         parts.push(format!("chorus_flange={}", self.chorus_flange));
+        parts.push(format!("at_key={}", self.at_key));
+        parts.push(format!("at_scale={}", self.at_scale));
         parts.join(";")
     }
 
@@ -209,6 +228,16 @@ impl Settings {
                 "chorus_flange" => {
                     if let Ok(n) = val.parse::<u8>() {
                         self.chorus_flange = n.min(1);
+                    }
+                }
+                "at_key" => {
+                    if let Ok(n) = val.parse::<u8>() {
+                        self.at_key = n.min(11);
+                    }
+                }
+                "at_scale" => {
+                    if let Ok(n) = val.parse::<u8>() {
+                        self.at_scale = n.min(5); // keep equal to SCALES.len() - 1
                     }
                 }
                 _ => {
@@ -255,6 +284,8 @@ fn range_of(name: &str) -> (f32, f32) {
         "rate_hz" => (2000.0, 48000.0),
         "lpf_hz" => (1000.0, 20000.0),
         "hiss" => (0.0, 0.1),
+        "at_speed_ms" => (0.0, 400.0),
+        "fm_shift" => (-12.0, 12.0),
         _ => (0.0, 1.0), // every other setting is a 0..1 amount
     }
 }
@@ -265,6 +296,8 @@ pub(crate) struct Params {
     // patterns, so fetch_max is a peak-hold; the UI resets it with swap(0).
     pub(crate) in_peak: AtomicU32,
     pub(crate) out_peak: AtomicU32,
+    // detected note for the UI: 0 = no voice, else ((midi+1) << 8) | cents as i8 as u8
+    pub(crate) at_note: AtomicU32,
 }
 
 impl Params {
@@ -273,6 +306,7 @@ impl Params {
             settings: Mutex::new(Settings::neutral()),
             in_peak: AtomicU32::new(0),
             out_peak: AtomicU32::new(0),
+            at_note: AtomicU32::new(0),
         }
     }
 }

@@ -6,6 +6,9 @@ use std::f32::consts::PI;
 
 pub(super) const NS_N: usize = 512; // FFT size
 const NS_HOP: usize = 256; // 50 % overlap -> about 10 ms of delay at 48 kHz
+const FM_W: usize = 2; // envelope smoothing: +-2 bins (about +-190 Hz at 48 kHz)
+const FM_MIN: f32 = 0.05; // formant gain limits, kept only for stability
+const FM_MAX: f32 = 10.0;
 
 pub(super) struct Fft {
     rev: Vec<usize>,
@@ -71,6 +74,8 @@ impl Fft {
 /// whenever your voice is not louder than the noise there. It never mutes
 /// completely: the gain floor stops the "cut out" effect of hard gates.
 pub(super) struct NoiseSuppressor {
+    env: Vec<f32>,
+    fm_g: Vec<f32>,
     fft: Fft,
     win: Vec<f32>,
     ring: Vec<f32>,  // last NS_N input samples (circular)
@@ -91,6 +96,7 @@ impl NoiseSuppressor {
     pub(super) fn new() -> Self {
         let half = NS_N / 2 + 1;
         Self {
+            env: vec![1.0; half], fm_g: vec![1.0; half],
             fft: Fft::new(NS_N),
             win: (0..NS_N).map(|i| (PI * (i as f32 + 0.5) / NS_N as f32).sin()).collect(),
             ring: vec![0.0; NS_N],
@@ -109,6 +115,7 @@ impl NoiseSuppressor {
     }
 
     pub(super) fn reset(&mut self) {
+        self.fm_g.fill(1.0);
         self.ring.fill(0.0);
         self.acc.fill(0.0);
         self.ready.fill(0.0);
@@ -119,19 +126,21 @@ impl NoiseSuppressor {
         self.primed = false;
     }
 
-    pub(super) fn process(&mut self, x: f32, alpha: f32, floor: f32) -> f32 {
+    /// `ns` = Some((alpha, floor)) when noise suppression is on; `fm_inv` = 1 / formant
+    /// ratio, <= 0 when formant shift is off.
+    pub(super) fn process(&mut self, x: f32, ns: Option<(f32, f32)>, fm_inv: f32) -> f32 {
         self.ring[self.pos] = x;
         self.pos = (self.pos + 1) % NS_N;
         let out = self.ready[self.count];
         self.count += 1;
         if self.count == NS_HOP {
             self.count = 0;
-            self.frame(alpha, floor);
+            self.frame(ns, fm_inv);
         }
         out
     }
 
-    fn frame(&mut self, alpha: f32, floor: f32) {
+    fn frame(&mut self, ns: Option<(f32, f32)>, fm_inv: f32) {
         let half = NS_N / 2;
         for i in 0..NS_N {
             let idx = (self.pos + i) % NS_N; // oldest sample is at `pos`
@@ -140,38 +149,69 @@ impl NoiseSuppressor {
         }
         self.fft.run(&mut self.re, &mut self.im, false);
 
-        let mut total = 0.0f32;
-        for k in 0..=half {
-            let p = self.re[k] * self.re[k] + self.im[k] * self.im[k];
-            self.ps[k] = 0.6 * self.ps[k] + 0.4 * p;
-            total += self.ps[k];
-            if !self.primed {
-                self.noise[k] = self.ps[k];
+        if let Some((alpha, floor)) = ns {
+            let mut total = 0.0f32;
+            for k in 0..=half {
+                let p = self.re[k] * self.re[k] + self.im[k] * self.im[k];
+                self.ps[k] = 0.6 * self.ps[k] + 0.4 * p;
+                total += self.ps[k];
+                if !self.primed {
+                    self.noise[k] = self.ps[k];
+                }
+                let calm = self.ps[k] < 2.5 * self.noise[k];
+                self.noise[k] = if calm {
+                    self.noise[k] + (self.ps[k] - self.noise[k]) * 0.05
+                } else {
+                    self.noise[k] * 1.0015
+                };
+                let xi = (self.ps[k] / self.noise[k].max(1e-12) - 1.0).max(0.0);
+                self.graw[k] = (xi / (xi + alpha)).max(floor);
             }
-            // Follow the noise when the band looks like noise; creep upwards
-            // slowly when it is much louder (speech), so speech is not learned.
-            let calm = self.ps[k] < 2.5 * self.noise[k];
-            self.noise[k] = if calm {
-                self.noise[k] + (self.ps[k] - self.noise[k]) * 0.05
-            } else {
-                self.noise[k] * 1.0015
-            };
-            let xi = (self.ps[k] / self.noise[k].max(1e-12) - 1.0).max(0.0);
-            self.graw[k] = (xi / (xi + alpha)).max(floor);
-        }
-        // After digital silence, learn the noise again from scratch.
-        self.primed = total > 1e-5;
-
-        for k in 0..=half {
-            let l = self.graw[k.saturating_sub(1)];
-            let r = self.graw[(k + 1).min(half)];
-            let gs = 0.25 * l + 0.5 * self.graw[k] + 0.25 * r;
-            let gp = self.gain[k];
-            self.gain[k] = if gs > gp { gp + (gs - gp) * 0.7 } else { gp + (gs - gp) * 0.25 };
+            self.primed = total > 1e-5;
+            for k in 0..=half {
+                let l = self.graw[k.saturating_sub(1)];
+                let r = self.graw[(k + 1).min(half)];
+                let gs = 0.25 * l + 0.5 * self.graw[k] + 0.25 * r;
+                let gp = self.gain[k];
+                self.gain[k] = if gs > gp { gp + (gs - gp) * 0.7 } else { gp + (gs - gp) * 0.25 };
+            }
+        } else {
+            self.primed = false;
+            self.ps.fill(0.0);
+            self.gain.fill(1.0);
         }
 
+        if fm_inv > 0.0 {
+            // Envelope = frequency-smoothed power. Warp it along the frequency axis and
+            // apply (warped / original) as a per-bin gain. Phases are untouched, so the
+            // pitch (fine structure) stays and only the formant envelope moves.
+            for k in 0..=half {
+                let lo = k.saturating_sub(FM_W);
+                let hi = (k + FM_W).min(half);
+                let mut sum = 0.0f32;
+                for j in lo..=hi {
+                    sum += self.re[j] * self.re[j] + self.im[j] * self.im[j];
+                }
+                self.env[k] = sum / (hi - lo + 1) as f32 + 1e-9;
+            }
+            for k in 0..=half {
+                let src = k as f32 * fm_inv;
+                let i = src as usize;
+                let e = if i >= half {
+                    self.env[half]
+                } else {
+                    let f = src - i as f32;
+                    self.env[i] + (self.env[i + 1] - self.env[i]) * f
+                };
+                let gt = (e / self.env[k]).sqrt().clamp(FM_MIN, FM_MAX);
+                self.fm_g[k] += (gt - self.fm_g[k]) * 0.5;
+            }
+        } else {
+            self.fm_g.fill(1.0);
+        }
+
         for k in 0..=half {
-            let g = self.gain[k];
+            let g = self.gain[k] * self.fm_g[k];
             self.re[k] *= g;
             self.im[k] *= g;
             if k > 0 && k < half {
