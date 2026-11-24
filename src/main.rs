@@ -13,6 +13,8 @@ mod dsp;
 mod settings;
 mod soundboard;
 mod ui;
+mod hotkeys;
+mod tray;
 
 use eframe::egui;
 
@@ -22,8 +24,12 @@ fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([600.0, 820.0])
-            .with_min_inner_size([520.0, 540.0]),
-        ..Default::default()
+            .with_min_inner_size([520.0, 540.0])
+            .with_icon(egui::IconData {
+                rgba: include_bytes!("../assets/icon_256.rgba").to_vec(),
+                width: 256,
+                height: 256,
+            }),
     };
     eframe::run_native("Voice Changer", options, Box::new(|cc| Box::new(App::new(cc.egui_ctx.clone()))))
 }

@@ -90,26 +90,58 @@ impl App {
         self.add_sounds(specs);
     }
 
+    pub(super) fn build_play(&mut self, i: usize) -> Option<Cmd> {
+        let e = self.engine.as_ref()?;
+        let snd = &mut self.sounds[i];
+        if snd.status != Status::Ready || snd.data.is_empty() {
+            return None;
+        }
+        snd.convert_to(e.sample_rate);
+        let rate = snd.rate as f64;
+        let len = snd.data.len() as f64;
+        let start = (snd.trim_start.max(0.0) as f64 * rate).min(len);
+        let end = if snd.trim_end > 0.0 { (snd.trim_end as f64 * rate).min(len) } else { len };
+        Some(Cmd::Play {
+            data: snd.data.clone(),
+            gain: snd.volume,
+            step: snd.speed as f64,
+            looping: snd.looping,
+            start,
+            end,
+            vc: snd.vc,
+        })
+    }
+
     pub(super) fn play_sound(&mut self, i: usize) {
-        if let Some(e) = &self.engine {
-            let snd = &mut self.sounds[i];
-            if snd.status != Status::Ready || snd.data.is_empty() {
-                return;
+        if let Some(c) = self.build_play(i) {
+            if let Some(e) = &self.engine {
+                let _ = e.tx.send(c);
             }
-            snd.convert_to(e.sample_rate);
-            let rate = snd.rate as f64;
-            let len = snd.data.len() as f64;
-            let start = (snd.trim_start.max(0.0) as f64 * rate).min(len);
-            let end = if snd.trim_end > 0.0 { (snd.trim_end as f64 * rate).min(len) } else { len };
-            let _ = e.tx.send(Cmd::Play {
-                data: snd.data.clone(),
-                gain: snd.volume,
-                step: snd.speed as f64,
-                looping: snd.looping,
-                start,
-                end,
-                vc: snd.vc,
-            });
+        }
+    }
+
+    pub(super) fn sound_key(&self, i: usize) -> String {
+        self.sounds[i].path.to_string_lossy().into_owned()
+    }
+
+    /// Re-registers all global hotkeys (call when `hk_dirty`).
+    pub(super) fn sync_hotkeys(&mut self) {
+        use crate::hotkeys::{send_cmd, Binding};
+        self.hk_dirty = false;
+        let mut b: Vec<Binding> = Vec::new();
+        let tx = self.shared_tx.clone();
+        b.push(Binding { slot: "stop".into(), spec: self.hk.stop.clone(), action: Arc::new(move || send_cmd(&tx, Cmd::StopAll)) });
+        let p = self.params.clone();
+        b.push(Binding { slot: "mute".into(), spec: self.hk.mute.clone(), action: Arc::new(move || p.toggle_mute()) });
+        for i in 0..self.sounds.len() {
+            let key = self.sound_key(i);
+            let Some(spec) = self.hk.sounds.get(&key).filter(|s| s.is_set()).cloned() else { continue };
+            let Some(cmd) = self.build_play(i) else { continue };
+            let tx = self.shared_tx.clone();
+            b.push(Binding { slot: format!("snd:{key}"), spec, action: Arc::new(move || send_cmd(&tx, cmd.clone())) });
+        }
+        if let Some(h) = self.hotkeys.as_mut() {
+            self.hk_status = h.sync(b);
         }
     }
 

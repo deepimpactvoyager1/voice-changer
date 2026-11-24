@@ -73,14 +73,27 @@ pub(crate) struct App {
     // saved settings
     last_saved: String,
     last_check: Instant,
+
+    // hotkeys & tray
+    hotkeys: Option<crate::hotkeys::Hotkeys>,
+    tray: Option<crate::tray::Tray>,
+    shared_tx: crate::hotkeys::SharedTx,
+    hk: crate::hotkeys::HotkeyConfig,
+    hk_status: std::collections::HashMap<String, crate::hotkeys::Status>,
+    hk_dirty: bool,
+    hide_to_tray: bool,
 }
 
 impl App {
     pub(crate) fn new(ctx: egui::Context) -> Self {
+        let params = Arc::new(Params::new());
+        let shared_tx: crate::hotkeys::SharedTx = Default::default();
+        let hotkeys = crate::hotkeys::Hotkeys::new(ctx.clone());
+        let tray = crate::tray::Tray::new(ctx.clone(), shared_tx.clone(), params.clone());
         let (load_tx, load_rx) = mpsc::channel();
         let mut app = Self {
             ctx,
-            params: Arc::new(Params::new()),
+            params,
             engine: None,
             error: None,
             notice: None,
@@ -111,6 +124,13 @@ impl App {
             load_rx,
             last_saved: String::new(),
             last_check: Instant::now(),
+            hotkeys,
+            tray,
+            shared_tx,
+            hk: Default::default(),
+            hk_status: Default::default(),
+            hk_dirty: true,
+            hide_to_tray: true,
         };
 
         let mut specs = Vec::new();
@@ -134,7 +154,12 @@ impl App {
                 self.error = None;
             }
             Err(e) => self.error = Some(e),
+                    
         }
+        if let Ok(mut g) = self.shared_tx.lock() {
+            *g = self.engine.as_ref().map(|e| e.tx.clone());
+        }
+        self.hk_dirty = true;
     }
 
     /// Starts audio; if a saved device is gone, falls back to the system defaults.

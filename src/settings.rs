@@ -301,7 +301,7 @@ pub(crate) struct Params {
 }
 
 impl Params {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new() -> Self {        
         Self {
             settings: Mutex::new(Settings::neutral()),
             in_peak: AtomicU32::new(0),
@@ -309,7 +309,19 @@ impl Params {
             at_note: AtomicU32::new(0),
         }
     }
+    /// Flips mic mute from a non-audio thread (hotkey/tray); the UI picks it up next frame.
+    pub(crate) fn toggle_mute(&self) {
+        if let Ok(mut g) = self.settings.lock() {
+            g.muted = !g.muted;
+        }
+    }
+
+    pub(crate) fn is_muted(&self) -> bool {
+        self.settings.lock().map(|g| g.muted).unwrap_or(false)
+    }
 }
+
+#[derive(Clone)]
 
 pub(crate) enum Cmd {
     Play { data: Arc<Vec<i16>>, gain: f32, step: f64, looping: bool, start: f64, end: f64, vc: bool },

@@ -63,9 +63,16 @@ impl App {
         });
 
         if status == Status::Ready {
-            egui::CollapsingHeader::new("options: volume, speed, loop, trim, voice changer")
+            egui::CollapsingHeader::new("options: volume, speed, loop, trim, voice changer, hotkey")
                 .id_source(("sound_opts", id))
                 .show(ui, |ui| {
+                    let key = self.sound_key(i);
+                    let st = self.hk_status.get(&format!("snd:{key}")).cloned();
+                    ui.label("Global hotkey:");
+                    let spec = self.hk.sounds.entry(key).or_default();
+                    if crate::hotkeys::editor(ui, ("hk", id), spec, st.as_ref()) {
+                        self.hk_dirty = true;
+                    }
                     let snd = &mut self.sounds[i];
                     ui.horizontal_wrapped(|ui| {
                         slider_inline(ui, &mut snd.volume, 1.0, 0.0..=2.0, "volume", "", false, 0.0, true);
@@ -101,7 +108,10 @@ impl App {
     }
 
     pub(super) fn ui_soundboard(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal_wrapped(|ui| {
+        if ui.input(|i| i.pointer.any_released()) {
+            self.hk_dirty = true; // any edit/remove rebuilds the hotkey actions
+        }
+        ui.horizontal_wrapped(|ui| {    
             if ui.button("Add sound files...").clicked() {
                 if let Some(paths) = rfd::FileDialog::new()
                     .add_filter("Audio", &["mp3", "wav", "ogg", "flac"])

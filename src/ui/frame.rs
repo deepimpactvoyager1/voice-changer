@@ -15,6 +15,27 @@ use super::{App, Tab};
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // pick up a mute toggled by a hotkey / the tray while the window was hidden
+        if let Ok(g) = self.params.settings.lock() {
+            if g.muted != self.last_sent.muted {
+                self.muted = g.muted;
+                self.last_sent.muted = g.muted;
+            }
+        }
+        if let Some(t) = &self.tray {
+            t.sync_mute(self.muted);
+        }
+        if self.hk_dirty {
+            self.sync_hotkeys();
+        }
+        if ctx.input(|i| i.viewport().close_requested())
+            && self.hide_to_tray
+            && self.tray.is_some()
+            && !crate::tray::quit_requested()
+        {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+        }
         // finished sound decodes
         while let Ok((id, res)) = self.load_rx.try_recv() {
             let rate = self.engine.as_ref().map(|e| e.sample_rate);
@@ -24,6 +45,7 @@ impl eframe::App for App {
                         snd.data = Arc::new(data);
                         snd.rate = r;
                         snd.status = Status::Ready;
+                        self.hk_dirty = true;
                         if let Some(rate) = rate {
                             snd.convert_to(rate); // safety net if the rate changed while loading
                         }
@@ -134,6 +156,31 @@ impl eframe::App for App {
                     Tab::Soundboard => self.ui_soundboard(ui),
                 }
 
+                egui::CollapsingHeader::new("Hotkeys & tray").show(ui, |ui| {
+                    ui.checkbox(&mut self.hide_to_tray, "Closing the window hides it to the tray");
+                    ui.label("Stop all sounds:");
+                    if crate::hotkeys::editor(ui, "hk_stop", &mut self.hk.stop, self.hk_status.get("stop")) {
+                        self.hk_dirty = true;
+                    }
+                    ui.label("Mute mic (toggle):");
+                    if crate::hotkeys::editor(ui, "hk_mute", &mut self.hk.mute, self.hk_status.get("mute")) {
+                        self.hk_dirty = true;
+                    }
+                    hint(
+                        ui,
+                        "Hotkeys work while a game or Discord is in front. Use an F-key, a numpad key, or any \
+                         key together with Ctrl/Alt/Shift/Win (plain letters and numbers are not allowed). Sound \
+                         hotkeys are set in each sound's options on the Soundboard tab. A red message means the \
+                         combo is used twice or another program already owns it.\n\
+                         Tray: the icon next to the clock has Show window, Mute mic, Stop all sounds and Quit; \
+                         left-click it to show the window. With the option above on, the X button only hides the \
+                         window. Use Quit to exit completely.",
+                    );
+                });
+                if ui.button("Quit").clicked() {
+                    crate::tray::request_quit(ctx);
+                }
+
                 ui.add_space(8.0);
                 egui::CollapsingHeader::new("Backup & restore").show(ui, |ui| {
                     ui.horizontal_wrapped(|ui| {
@@ -146,7 +193,7 @@ impl eframe::App for App {
                     });
                     hint(
                         ui,
-                        "A backup holds all settings, presets, folders and your sound list. Sounds are saved as \
+                        "A backup holds all settings, presets, folders, hotkeys and your sound list. Sounds are saved as \
                          file locations, so on another PC they only work if the files are in the same place. \
                          To share just a voice, use Export preset on the Voice effects tab.",
                     );
@@ -217,5 +264,9 @@ impl eframe::App for App {
             125
         };
         ctx.request_repaint_after(Duration::from_millis(ms));
+    }
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        self.tray = None; // removes the tray icon (no ghost)
+        self.hotkeys = None; // unregisters hotkeys
     }
 }

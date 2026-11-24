@@ -39,6 +39,8 @@ impl App {
                 s.group
             ));
         }
+        self.hk.write_lines(&mut t);
+        t.push_str(&format!("tray_hide={}\n", if self.hide_to_tray { 1 } else { 0 }));
         t
     }
 
@@ -110,6 +112,10 @@ impl App {
                         self.groups.push(spec.group.clone());
                     }
                     sounds.push(spec);
+                }
+                "tray_hide" => self.hide_to_tray = val.trim() != "0",
+                k if k.starts_with("hk_") => {
+                    self.hk.parse_line(k, val);
                 }
                 _ => {}
             }
@@ -217,6 +223,7 @@ impl App {
                 self.sounds.clear();
                 self.presets.clear();
                 self.groups.clear();
+                self.hk = Default::default();
                 let specs = self.load_config(&text);
                 self.start_with_fallback();
                 self.add_sounds(specs);

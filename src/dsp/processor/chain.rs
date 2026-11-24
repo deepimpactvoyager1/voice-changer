@@ -66,7 +66,12 @@ impl Processor {
         if self.gate_thresh > 0.0 {
             let a = x.abs();
             self.env = if a > self.env { a } else { self.env * self.env_rel };
-            let target = if self.env > self.gate_thresh { 1.0 } else { 0.0 };
+            if self.env > self.gate_thresh {
+                self.gate_open = true;
+            } else if self.env < self.gate_thresh * 0.5 {
+                self.gate_open = false; // closes only 6 dB below the open level
+            }
+            let target = if self.gate_open { 1.0 } else { 0.0 };
             let c = if target > self.gate_g { self.gate_atk } else { self.gate_rel };
             self.gate_g += (target - self.gate_g) * c;
             x *= self.gate_g;
