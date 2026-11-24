@@ -9,6 +9,8 @@ const NS_HOP: usize = 256; // 50 % overlap -> about 10 ms of delay at 48 kHz
 const FM_W: usize = 2; // envelope smoothing: +-2 bins (about +-190 Hz at 48 kHz)
 const FM_MIN: f32 = 0.05; // formant gain limits, kept only for stability
 const FM_MAX: f32 = 10.0;
+const NS_BIAS: f32 = 1.5; // the noise tracker averages only calm frames, so it reads low; raise = more suppression
+const NS_DD: f32 = 0.85; // decision-directed smoothing (higher = smoother, slower attack)
 
 pub(super) struct Fft {
     rev: Vec<usize>,
@@ -89,6 +91,8 @@ pub(super) struct NoiseSuppressor {
     noise: Vec<f32>, // noise power estimate per bin
     graw: Vec<f32>,  // gain before smoothing
     gain: Vec<f32>,  // smoothed gain actually applied
+    xprev: Vec<f32>, // previous frame's clean power per bin (decision-directed SNR)
+    idle: f32,       // extra attenuation while only noise is present (1 = none)
     primed: bool,
 }
 
@@ -110,6 +114,8 @@ impl NoiseSuppressor {
             noise: vec![0.0; half],
             graw: vec![1.0; half],
             gain: vec![1.0; half],
+            xprev: vec![0.0; half],
+            idle: 1.0,
             primed: false,
         }
     }
@@ -121,6 +127,8 @@ impl NoiseSuppressor {
         self.ready.fill(0.0);
         self.ps.fill(0.0);
         self.gain.fill(1.0);
+        self.xprev.fill(0.0);
+        self.idle = 1.0;
         self.pos = 0;
         self.count = 0;
         self.primed = false;
@@ -150,7 +158,9 @@ impl NoiseSuppressor {
         self.fft.run(&mut self.re, &mut self.im, false);
 
         if let Some((alpha, floor)) = ns {
+            let amt = ((alpha - 1.0) * 0.25).clamp(0.0, 1.0); // alpha = 1 + 4 * strength
             let mut total = 0.0f32;
+            let mut ntotal = 0.0f32;
             for k in 0..=half {
                 let p = self.re[k] * self.re[k] + self.im[k] * self.im[k];
                 self.ps[k] = 0.6 * self.ps[k] + 0.4 * p;
@@ -164,14 +174,23 @@ impl NoiseSuppressor {
                 } else {
                     self.noise[k] * 1.0015
                 };
-                let xi = (self.ps[k] / self.noise[k].max(1e-12) - 1.0).max(0.0);
-                self.graw[k] = (xi / (xi + alpha)).max(floor);
+                ntotal += self.noise[k];
+                let n = (self.noise[k] * NS_BIAS).max(1e-12);
+                let gamma = self.ps[k] / n;
+                let xi = NS_DD * self.xprev[k] / n + (1.0 - NS_DD) * (gamma - 1.0).max(0.0);
+                let g = (xi / (xi + alpha)).max(floor);
+                self.graw[k] = g;
+                self.xprev[k] = g * g * self.ps[k];
             }
             self.primed = total > 1e-5;
+            // Frame-level: when the whole frame is about as loud as the noise estimate,
+            // nobody is talking, so pull everything down a bit more (never below `floor`).
+            let idle_t = if total < 2.0 * ntotal.max(1e-12) { 1.0 - 0.65 * amt } else { 1.0 };
+            self.idle += (idle_t - self.idle) * if idle_t > self.idle { 0.5 } else { 0.15 };
             for k in 0..=half {
                 let l = self.graw[k.saturating_sub(1)];
                 let r = self.graw[(k + 1).min(half)];
-                let gs = 0.25 * l + 0.5 * self.graw[k] + 0.25 * r;
+                let gs = ((0.25 * l + 0.5 * self.graw[k] + 0.25 * r) * self.idle).max(floor);
                 let gp = self.gain[k];
                 self.gain[k] = if gs > gp { gp + (gs - gp) * 0.7 } else { gp + (gs - gp) * 0.25 };
             }
@@ -179,6 +198,8 @@ impl NoiseSuppressor {
             self.primed = false;
             self.ps.fill(0.0);
             self.gain.fill(1.0);
+            self.xprev.fill(0.0);
+            self.idle = 1.0;
         }
 
         if fm_inv > 0.0 {
