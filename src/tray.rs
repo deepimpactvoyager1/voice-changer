@@ -96,10 +96,8 @@ mod imp {
             let c = ctx.clone();
             std::thread::Builder::new().name("tray-click".into()).spawn(move || {
                 while let Ok(ev) = TrayIconEvent::receiver().recv() {
-                    match ev {
-                        TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. }
-                        | TrayIconEvent::DoubleClick { button: MouseButton::Left, .. } => show_window(&c),
-                        _ => {}
+                    if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = ev {
+                        show_window(&c);
                     }
                 }
             }).ok()?;

@@ -30,6 +30,7 @@ fn main() -> eframe::Result<()> {
                 width: 256,
                 height: 256,
             }),
+        ..Default::default()
     };
     eframe::run_native("Voice Changer", options, Box::new(|cc| Box::new(App::new(cc.egui_ctx.clone()))))
 }
