@@ -295,6 +295,13 @@ impl Processor {
                     }
                 }
                 Cmd::StopAll => self.voices.clear(),
+
+                Cmd::LearnNoise => {
+                    self.ns.start_learn(2.5, self.sr);
+                    self.params.ns_state.store(1, std::sync::atomic::Ordering::Relaxed);
+                }
+                Cmd::SetNoise(p) => self.ns.set_profile(&p),
+                Cmd::ClearNoise => self.ns.clear_profile(),
             }
         }
         if self.st_dirty {

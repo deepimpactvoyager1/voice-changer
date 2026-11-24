@@ -6,6 +6,8 @@ use std::time::{Duration, Instant};
 
 use eframe::egui;
 
+use crate::settings::Cmd;
+
 use crate::audio::device_names;
 use crate::config::save_config;
 use crate::soundboard::Status;
@@ -15,6 +17,14 @@ use super::{App, Tab};
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // a finished room-noise learn: copy the profile out so it gets saved
+        if self.params.ns_state.load(Relaxed) == 2 {
+            if let (Ok(g), Some(e)) = (self.params.noise_prof.lock(), &self.engine) {
+                self.noise_prof = g.clone();
+                self.noise_rate = e.sample_rate;
+                self.params.ns_state.store(0, Relaxed);
+            }
+        }
         // pick up a mute toggled by a hotkey / the tray while the window was hidden
         if let Ok(g) = self.params.settings.lock() {
             if g.muted != self.last_sent.muted {
@@ -140,8 +150,36 @@ impl eframe::App for App {
                         "0 = off. Removes steady background noise (fans, hiss, hum, room tone) before the \
                          effects, and never fully mutes you. Adds about 10 ms of delay. Try 0.5 first: \
                          raise it if you still hear noise, lower it if your voice sounds watery. Sudden \
-                         sounds like keyboard clicks are only reduced a little; use the noise gate for those.",
+                         sounds like keyboard clicks are only reduced a little; use the noise gate for those. \
+                         Learn room noise: click it while the room is quiet and say nothing; the frequencies in \
+                         that noise are then reduced harder.",
                     );
+                    ui.horizontal_wrapped(|ui| {
+                        if self.params.ns_state.load(Relaxed) == 1 {
+                            ui.label("Learning the room noise... stay quiet.");
+                        } else {
+                            if ui.button("Learn room noise (2.5 s)").clicked() {
+                                self.params.ns_state.store(1, Relaxed);
+                                if let Some(e) = &self.engine {
+                                    let _ = e.tx.send(Cmd::LearnNoise);
+                                }
+                            }
+                            if !self.noise_prof.is_empty() && ui.button("Clear").clicked() {
+                                self.noise_prof.clear();
+                                if let Some(e) = &self.engine {
+                                    let _ = e.tx.send(Cmd::ClearNoise);
+                                }
+                            }
+                        }
+                    });
+                    if !self.noise_prof.is_empty() {
+                        let ok = self.engine.as_ref().map(|e| e.sample_rate == self.noise_rate).unwrap_or(false);
+                        ui.label(egui::RichText::new(if ok {
+                            "Room profile active (needs strength above 0)."
+                        } else {
+                            "Saved profile is for another sample rate: learn again."
+                        }).weak());
+                    }
                 });
 
                 ui.separator();

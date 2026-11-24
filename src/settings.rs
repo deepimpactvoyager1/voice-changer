@@ -298,6 +298,8 @@ pub(crate) struct Params {
     pub(crate) out_peak: AtomicU32,
     // detected note for the UI: 0 = no voice, else ((midi+1) << 8) | cents as i8 as u8
     pub(crate) at_note: AtomicU32,
+    pub(crate) noise_prof: Mutex<Vec<f32>>, // learned room-noise power per bin (NS_N / 2 + 1 = 257)
+    pub(crate) ns_state: AtomicU32,         // 0 idle, 1 learning, 2 new profile ready for the UI
 }
 
 impl Params {
@@ -307,6 +309,8 @@ impl Params {
             in_peak: AtomicU32::new(0),
             out_peak: AtomicU32::new(0),
             at_note: AtomicU32::new(0),
+            noise_prof: Mutex::new(vec![0.0; 257]),
+            ns_state: AtomicU32::new(0),
         }
     }
     /// Flips mic mute from a non-audio thread (hotkey/tray); the UI picks it up next frame.
@@ -326,4 +330,7 @@ impl Params {
 pub(crate) enum Cmd {
     Play { data: Arc<Vec<i16>>, gain: f32, step: f64, looping: bool, start: f64, end: f64, vc: bool },
     StopAll,
+    LearnNoise,
+    SetNoise(Arc<Vec<f32>>),
+    ClearNoise,
 }

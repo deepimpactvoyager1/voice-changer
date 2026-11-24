@@ -9,6 +9,16 @@ impl Processor {
     /// Call once at the end of every audio buffer.
     pub(crate) fn end_block(&mut self) {
         self.voices.retain(|v| v.looping || v.pos < v.end);
+        if self.ns.profile_ready() {
+            if let Ok(mut g) = self.params.noise_prof.try_lock() {
+                let p = self.ns.profile();
+                if g.len() == p.len() {
+                    g.copy_from_slice(p);
+                    self.ns.ack_profile();
+                    self.params.ns_state.store(2, std::sync::atomic::Ordering::Relaxed);
+                }
+            }
+        }
     }
 
     fn noise(&mut self) -> f32 {
@@ -57,7 +67,7 @@ impl Processor {
         let mut x = input * self.in_gain;
 
         // 1. noise suppression / formant shift (one shared STFT; effects don't boost noise)
-        if self.ns_on || self.fm_inv > 0.0 {
+        if self.ns_on || self.fm_inv > 0.0 || self.ns.learning() {
             let ns = if self.ns_on { Some((self.ns_alpha, self.ns_floor)) } else { None };
             x = self.ns.process(x, ns, self.fm_inv);
         }

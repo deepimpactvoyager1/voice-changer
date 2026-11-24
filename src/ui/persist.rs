@@ -41,6 +41,10 @@ impl App {
         }
         self.hk.write_lines(&mut t);
         t.push_str(&format!("tray_hide={}\n", if self.hide_to_tray { 1 } else { 0 }));
+        if !self.noise_prof.is_empty() {
+            let v: Vec<String> = self.noise_prof.iter().map(|x| format!("{x:e}")).collect();
+            t.push_str(&format!("noise_prof={}\t{}\n", self.noise_rate, v.join(",")));
+        }
         t
     }
 
@@ -116,6 +120,19 @@ impl App {
                 "tray_hide" => self.hide_to_tray = val.trim() != "0",
                 k if k.starts_with("hk_") => {
                     self.hk.parse_line(k, val);
+                }
+                "noise_prof" => {
+                    if let Some((r, v)) = val.split_once('\t') {
+                        let p: Vec<f32> = v
+                            .split(',')
+                            .filter_map(|s| s.trim().parse::<f32>().ok())
+                            .filter(|x| x.is_finite() && *x >= 0.0)
+                            .collect();
+                        if p.len() == 257 {
+                            self.noise_prof = p;
+                            self.noise_rate = r.trim().parse().unwrap_or(0);
+                        }
+                    }
                 }
                 _ => {}
             }
@@ -223,6 +240,7 @@ impl App {
                 self.sounds.clear();
                 self.presets.clear();
                 self.groups.clear();
+                self.noise_prof.clear();
                 self.hk = Default::default();
                 let specs = self.load_config(&text);
                 self.start_with_fallback();

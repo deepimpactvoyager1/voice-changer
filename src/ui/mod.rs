@@ -73,6 +73,8 @@ pub(crate) struct App {
     // saved settings
     last_saved: String,
     last_check: Instant,
+    noise_prof: Vec<f32>, // learned room-noise profile (empty = none)
+    noise_rate: u32,      // sample rate it was learned at
 
     // hotkeys & tray
     hotkeys: Option<crate::hotkeys::Hotkeys>,
@@ -124,6 +126,8 @@ impl App {
             load_rx,
             last_saved: String::new(),
             last_check: Instant::now(),
+            noise_prof: Vec::new(),
+            noise_rate: 0,
             hotkeys,
             tray,
             shared_tx,
@@ -160,6 +164,7 @@ impl App {
             *g = self.engine.as_ref().map(|e| e.tx.clone());
         }
         self.hk_dirty = true;
+        self.push_noise_profile();
     }
 
     /// Starts audio; if a saved device is gone, falls back to the system defaults.
@@ -170,6 +175,16 @@ impl App {
             self.out_sel.clear();
             self.mon_sel.clear();
             self.restart_engine();
+        }
+    }
+
+    /// Called after every engine start: a new Processor has no profile yet.
+    fn push_noise_profile(&self) {
+        self.params.ns_state.store(0, std::sync::atomic::Ordering::Relaxed);
+        if let Some(e) = &self.engine {
+            if !self.noise_prof.is_empty() && e.sample_rate == self.noise_rate {
+                let _ = e.tx.send(crate::settings::Cmd::SetNoise(Arc::new(self.noise_prof.clone())));
+            }
         }
     }
 }

@@ -11,6 +11,7 @@ const FM_MIN: f32 = 0.05; // formant gain limits, kept only for stability
 const FM_MAX: f32 = 10.0;
 const NS_BIAS: f32 = 1.5; // the noise tracker averages only calm frames, so it reads low; raise = more suppression
 const NS_DD: f32 = 0.85; // decision-directed smoothing (higher = smoother, slower attack)
+const PROF_BIAS: f32 = 1.3; // learned profile is multiplied by this (raise = stronger on room noise)
 
 pub(super) struct Fft {
     rev: Vec<usize>,
@@ -93,6 +94,12 @@ pub(super) struct NoiseSuppressor {
     gain: Vec<f32>,  // smoothed gain actually applied
     xprev: Vec<f32>, // previous frame's clean power per bin (decision-directed SNR)
     idle: f32,       // extra attenuation while only noise is present (1 = none)
+    prof: Vec<f32>,      // learned room-noise power per bin
+    prof_on: bool,
+    prof_new: bool,      // finished learning, not yet published to the UI
+    learn_sum: Vec<f32>,
+    learn_n: u32,
+    learn_left: usize,   // frames left while learning (0 = not learning)
     primed: bool,
 }
 
@@ -116,6 +123,12 @@ impl NoiseSuppressor {
             gain: vec![1.0; half],
             xprev: vec![0.0; half],
             idle: 1.0,
+            prof: vec![0.0; half],
+            prof_on: false,
+            prof_new: false,
+            learn_sum: vec![0.0; half],
+            learn_n: 0,
+            learn_left: 0,
             primed: false,
         }
     }
@@ -133,6 +146,28 @@ impl NoiseSuppressor {
         self.count = 0;
         self.primed = false;
     }
+
+    pub(super) fn start_learn(&mut self, secs: f32, sr: f32) {
+        self.learn_sum.fill(0.0);
+        self.learn_n = 0;
+        self.learn_left = ((secs * sr / NS_HOP as f32) as usize).max(8);
+    }
+    pub(super) fn learning(&self) -> bool { self.learn_left > 0 }
+    pub(super) fn set_profile(&mut self, p: &[f32]) {
+        if p.len() == self.prof.len() && p.iter().all(|v| v.is_finite() && *v >= 0.0) {
+            self.prof.copy_from_slice(p);
+            self.prof_on = true;
+        }
+    }
+    pub(super) fn clear_profile(&mut self) {
+        self.prof.fill(0.0);
+        self.prof_on = false;
+        self.prof_new = false;
+        self.learn_left = 0;
+    }
+    pub(super) fn profile_ready(&self) -> bool { self.prof_new }
+    pub(super) fn profile(&self) -> &[f32] { &self.prof }
+    pub(super) fn ack_profile(&mut self) { self.prof_new = false; }
 
     /// `ns` = Some((alpha, floor)) when noise suppression is on; `fm_inv` = 1 / formant
     /// ratio, <= 0 when formant shift is off.
@@ -157,6 +192,22 @@ impl NoiseSuppressor {
         }
         self.fft.run(&mut self.re, &mut self.im, false);
 
+        if self.learn_left > 0 {
+            for k in 0..=half {
+                self.learn_sum[k] += self.re[k] * self.re[k] + self.im[k] * self.im[k];
+            }
+            self.learn_n += 1;
+            self.learn_left -= 1;
+            if self.learn_left == 0 && self.learn_n > 0 {
+                let inv = 1.0 / self.learn_n as f32;
+                for k in 0..=half {
+                    self.prof[k] = self.learn_sum[k] * inv;
+                }
+                self.prof_on = true;
+                self.prof_new = true;
+            }
+        }
+
         if let Some((alpha, floor)) = ns {
             let amt = ((alpha - 1.0) * 0.25).clamp(0.0, 1.0); // alpha = 1 + 4 * strength
             let mut total = 0.0f32;
@@ -166,7 +217,7 @@ impl NoiseSuppressor {
                 self.ps[k] = 0.6 * self.ps[k] + 0.4 * p;
                 total += self.ps[k];
                 if !self.primed {
-                    self.noise[k] = self.ps[k];
+                    self.noise[k] = if self.prof_on { self.prof[k] } else { self.ps[k] };
                 }
                 let calm = self.ps[k] < 2.5 * self.noise[k];
                 self.noise[k] = if calm {
@@ -174,8 +225,10 @@ impl NoiseSuppressor {
                 } else {
                     self.noise[k] * 1.0015
                 };
-                ntotal += self.noise[k];
-                let n = (self.noise[k] * NS_BIAS).max(1e-12);
+                let nk = if self.prof_on { self.noise[k].max(self.prof[k]) } else { self.noise[k] };
+                ntotal += nk;
+                let nt = self.noise[k] * NS_BIAS;
+                let n = if self.prof_on { nt.max(self.prof[k] * PROF_BIAS) } else { nt }.max(1e-12);
                 let gamma = self.ps[k] / n;
                 let xi = NS_DD * self.xprev[k] / n + (1.0 - NS_DD) * (gamma - 1.0).max(0.0);
                 let g = (xi / (xi + alpha)).max(floor);
@@ -183,8 +236,6 @@ impl NoiseSuppressor {
                 self.xprev[k] = g * g * self.ps[k];
             }
             self.primed = total > 1e-5;
-            // Frame-level: when the whole frame is about as loud as the noise estimate,
-            // nobody is talking, so pull everything down a bit more (never below `floor`).
             let idle_t = if total < 2.0 * ntotal.max(1e-12) { 1.0 - 0.65 * amt } else { 1.0 };
             self.idle += (idle_t - self.idle) * if idle_t > self.idle { 0.5 } else { 0.15 };
             for k in 0..=half {
